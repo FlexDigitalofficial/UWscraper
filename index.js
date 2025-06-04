@@ -13,7 +13,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 require('dotenv').config();
 
-// Install the stealth plugin so Cloudflare checks are bypassed
+// Install the stealth plugin to mask headless signals
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -47,11 +47,17 @@ app.post('/scrape', async (req, res) => {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
-    // Use Puppeteer’s page.type instead of page.fill:
-    await page.type('input#login_username', process.env.UPWORK_EMAIL);
-    await page.type('input#login_password', process.env.UPWORK_PASSWORD);
-    await page.click('button[type="submit"]');
-    // Wait until navigation completes (you are now authenticated)
+    // Type email into the “Username” field
+    await page.type('input#login_username', process.env.UPWORK_EMAIL, { delay: 50 });
+    // Press “Enter” so that the password field is revealed (Upwork’s login is two‐step)
+    await page.keyboard.press('Enter');
+    // Wait for the password input to appear
+    await page.waitForSelector('input#login_password', { timeout: 10000 });
+    // Type password into the “Password” field
+    await page.type('input#login_password', process.env.UPWORK_PASSWORD, { delay: 50 });
+    // Press “Enter” again to submit
+    await page.keyboard.press('Enter');
+    // Wait until navigation completes—this signals you are now authenticated
     await page.waitForNavigation({
       waitUntil: 'networkidle2',
       timeout: 60000
