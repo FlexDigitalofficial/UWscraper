@@ -1,7 +1,7 @@
 {
   "name": "UWscraper",
   "version": "1.0.1",
-  "description": "An Express + Puppeteer-extra stealth scraper Dockerized for Render",
+  "description": "An Express + Puppeteer-extra-stealth scraper Dockerized for Render",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
