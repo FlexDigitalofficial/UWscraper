@@ -2,11 +2,12 @@
  * index.js
  *
  * • Accepts POST /scrape { url: "<target>" }.
- * • Uses puppeteer-extra+stealth to bypass Cloudflare.
- * • Navigates to targetUrl. If Cloudflare’s JS‐challenge appears,
- *   waits for it to redirect to the real page.
- * • If an Upwork login form appears, logs in, then re-navigates.
- * • Returns the final page HTML.
+ * • Navigates to targetUrl using puppeteer-extra + stealth.
+ * • If Cloudflare challenge appears, waits for document.title to change from "Just a moment..."
+ *   (i.e. until the real page has loaded).
+ * • If an Upwork login form appears afterward, logs in, re-navigates, and again waits for
+ *   the title to move away from "Just a moment...".
+ * • Finally returns the fully rendered HTML of the real job page (or any public page).
  */
 
 const express = require('express');
@@ -24,10 +25,10 @@ app.post('/scrape', async (req, res) => {
   if (!targetUrl) {
     return res.status(400).json({ error: 'Missing URL' });
   }
-  
+
   let browser;
   try {
-    // 1) Launch headless Chrome via puppeteer-extra
+    // 1) Launch headless Chrome with stealth
     browser = await puppeteer.launch({
       executablePath: '/usr/bin/google-chrome-stable',
       headless: true,
@@ -37,74 +38,63 @@ app.post('/scrape', async (req, res) => {
         '--disable-dev-shm-usage'
       ]
     });
+
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
-    // 2) Go to the target URL (Upwork job page or any URL)
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // 2) Go to the target URL (Upwork job or any public page)
+    //    Use waitUntil: 'networkidle2' so Cloudflare JS can run through.
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // 3) Detect if Cloudflare challenge is present
-    //    Cloudflare appends a redirect to "/cdn-cgi/challenge-platform" while it runs JS.
-    //    Also, the page source will contain "cf_chl_opt" in a <script> tag.
-    let currentUrl = page.url();
-    const isChallengePage = () => {
-      return (
-        currentUrl.includes('/cdn-cgi/challenge-platform') ||
-        // also check if HTML contains Cloudflare challenge indicators
-        page.content().then(html => html.includes('cf_chl_opt'))
-      );
-    };
-
-    // 4) If we hit the challenge, wait for the JS to redirect to the real page
-    if (currentUrl.includes('/cdn-cgi/challenge-platform') || (await page.content()).includes('cf_chl_opt')) {
-      console.log('Cloudflare challenge detected, waiting for redirect…');
-      // Wait up to 30 seconds for the URL to change away from the challenge
+    // 3) If title is "Just a moment...", we're stuck on Cloudflare's challenge page.
+    let title = await page.title();
+    if (title === 'Just a moment…' || title === 'Just a moment...') {
+      // Wait up to 30s for the title to change away from "Just a moment..."
       await page.waitForFunction(
-        () => !window.location.href.includes('/cdn-cgi/challenge-platform'),
+        () => document.title !== 'Just a moment…' && document.title !== 'Just a moment...',
         { timeout: 30000 }
       );
-      // Give the page a moment to fully load its content
-      await page.waitForTimeout(2000);
+      // Give the page a moment to finish rendering
+      await page.waitForTimeout(1000);
     }
 
-    // 5) After bypassing Cloudflare, re-check URL (it should now be targetUrl or equivalent)
-    currentUrl = page.url();
+    // 4) At this point, we should be on the real page. Grab its HTML.
+    let html = await page.content();
 
-    // 6) If this is an Upwork job and login is required, detect and log in
-    const htmlAfterCF = await page.content();
-    const loginFormPresent = htmlAfterCF.includes('input#login_username') &&
-                             htmlAfterCF.includes('button#login_password_continue');
+    // 5) Check if the Upwork login form is present (for private jobs)
+    //    We look for the email input and the button#login_password_continue.
+    const loginFormPresent = html.includes('input#login_username') &&
+                             html.includes('button#login_password_continue');
 
     if (loginFormPresent && process.env.UPWORK_EMAIL && process.env.UPWORK_PASSWORD) {
-      console.log('Login form detected, performing login…');
-      // a) Type email and submit
+      // 5a) Perform Upwork login: type email, click Continue, type password, click Continue
       await page.type('input#login_username', process.env.UPWORK_EMAIL, { delay: 50 });
       await page.click('button#login_password_continue');
       await page.waitForSelector('input#login_password', { timeout: 20000 });
-      // b) Type password and submit
       await page.type('input#login_password', process.env.UPWORK_PASSWORD, { delay: 50 });
       await page.click('button#login_password_continue');
-      // c) Wait for navigation post-login
+      // Wait for navigation after login
       await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
-      // d) Re‐navigate to the original target URL
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      // e) Possibly repeat Cloudflare bypass if necessary (rare after login)
-      currentUrl = page.url();
-      if (currentUrl.includes('/cdn-cgi/challenge-platform') || (await page.content()).includes('cf_chl_opt')) {
-        console.log('Post-login Cloudflare challenge, waiting again…');
+
+      // 5b) Re‐navigate to the original target URL (job page)
+      await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+      // 5c) Check for Cloudflare once more (rare after login) by checking title again
+      title = await page.title();
+      if (title === 'Just a moment…' || title === 'Just a moment...') {
         await page.waitForFunction(
-          () => !window.location.href.includes('/cdn-cgi/challenge-platform'),
+          () => document.title !== 'Just a moment…' && document.title !== 'Just a moment...',
           { timeout: 30000 }
         );
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(1000);
       }
+
+      // 5d) Grab the final HTML after login & Cloudflare bypass
+      html = await page.content();
     }
 
-    // 7) Wait for <body> (final page should be fully loaded now)
-    await page.waitForSelector('body', { timeout: 20000 });
-    const finalHtml = await page.content();
     await browser.close();
-    return res.status(200).send(finalHtml);
+    return res.status(200).send(html);
 
   } catch (err) {
     console.error('Scraping error:', err.message);
@@ -113,6 +103,5 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
