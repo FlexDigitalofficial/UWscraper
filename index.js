@@ -1,11 +1,11 @@
 /**
  * index.js
  *
- * This Express server:
- *   1) Accepts POST /scrape with JSON { url: "<target>" }.
- *   2) Uses puppeteer-extra + stealth plugin (pointing at system Chrome)
- *      to bypass Cloudflare/“Just a moment…” gates and log in to Upwork.
- *   3) After logging in, navigates to the target URL and returns rendered HTML.
+ * • Accepts POST /scrape { url: "<targetUrl>" }.
+ * • If targetUrl contains "upwork.com/jobs/", Puppeteer will first log in
+ *   to Upwork; otherwise, it skips login entirely.
+ * • Uses puppeteer-extra + stealth plugin (system Chrome) to bypass Cloudflare.
+ * • Returns the fully rendered HTML of the target page.
  */
 
 const express = require('express');
@@ -13,7 +13,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 require('dotenv').config();
 
-// Install the stealth plugin to mask headless signals
+// Install stealth plugin to mask headless‐browser signals
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -27,7 +27,7 @@ app.post('/scrape', async (req, res) => {
 
   let browser;
   try {
-    // 1) Launch Puppeteer-extra using the system Chrome binary
+    // 1) Launch Puppeteer-extra using system Chrome
     browser = await puppeteer.launch({
       executablePath: '/usr/bin/google-chrome-stable',
       headless: true,
@@ -39,36 +39,35 @@ app.post('/scrape', async (req, res) => {
     });
 
     const page = await browser.newPage();
-    // Spoof a standard desktop user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
-    // 2) Navigate to Upwork’s login page and sign in
-    await page.goto('https://www.upwork.com/ab/account-security/login', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
-    // Type email into the “Username” field
-    await page.type('input#login_username', process.env.UPWORK_EMAIL, { delay: 50 });
-    // Press “Enter” so that the password field is revealed (Upwork’s login is two‐step)
-    await page.keyboard.press('Enter');
-    // Wait for the password input to appear
-    await page.waitForSelector('input#login_password', { timeout: 10000 });
-    // Type password into the “Password” field
-    await page.type('input#login_password', process.env.UPWORK_PASSWORD, { delay: 50 });
-    // Press “Enter” again to submit
-    await page.keyboard.press('Enter');
-    // Wait until navigation completes—this signals you are now authenticated
-    await page.waitForNavigation({
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
+    // 2) If the target is an Upwork job page, perform login first
+    if (targetUrl.includes('upwork.com/jobs/')) {
+      // 2a) Navigate to Upwork login
+      await page.goto('https://www.upwork.com/ab/account-security/login', {
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
 
-    // 3) Now navigate to the target URL (Upwork job page or any public URL)
+      // 2b) Type email, press Enter, wait for password field
+      await page.type('input#login_username', process.env.UPWORK_EMAIL, { delay: 50 });
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('input#login_password', { timeout: 10000 });
+
+      // 2c) Type password, press Enter, wait for navigation
+      await page.type('input#login_password', process.env.UPWORK_PASSWORD, { delay: 50 });
+      await page.keyboard.press('Enter');
+      await page.waitForNavigation({
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
+    }
+
+    // 3) Now navigate to the target URL (whether example.com or an Upwork job)
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    // Wait for <body> to ensure the page is fully rendered
     await page.waitForSelector('body', { timeout: 20000 });
 
-    // 4) Grab and return the fully rendered HTML
+    // 4) Grab and return the rendered HTML
     const html = await page.content();
     await browser.close();
     return res.status(200).send(html);
