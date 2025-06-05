@@ -5,3 +5,9 @@ services:
     plan: free
     dockerfilePath: Dockerfile
     autoDeploy: true
+    # Add environment variables for Upwork login here (on Render dashboard or in render.yaml if public)
+    # envVars:
+    #   - key: UPWORK_EMAIL
+    #     value: your_upwork_email@example.com
+    #   - key: UPWORK_PASSWORD
+    #     value: your_upwork_password
